@@ -4,20 +4,38 @@ from torchvision.utils import save_image, make_grid
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from torchvision.datasets import MNIST, FashionMNIST, CIFAR10
+from PIL import Image
 from tqdm import tqdm
 import os
 from models import ContextUnet
-from utils import SpriteDataset, generate_animation
+from utils import SpriteDataset, PairedImageDataset, generate_animation
 
 
 
 class DiffusionModel(nn.Module):
-    def __init__(self, device=None, dataset_name=None, checkpoint_name=None):
+    def __init__(self, device=None, dataset_name=None, checkpoint_name=None, dataset_path=None):
         super(DiffusionModel, self).__init__()
         self.device = self.initialize_device(device)
         self.file_dir = os.path.dirname(__file__)
         self.dataset_name = self.initialize_dataset_name(self.file_dir, checkpoint_name, dataset_name)
+        self.dataset_path = dataset_path
         self.checkpoint_name = checkpoint_name
+        if self.dataset_name == "paired" and self.dataset_path:
+            sample_dir = os.path.join(self.dataset_path, "stained")
+            try:
+                sample_file = sorted(os.listdir(sample_dir))[0]
+                with Image.open(os.path.join(sample_dir, sample_file)) as img:
+                    self.in_channels = len(img.getbands())
+                    self.height, self.width = img.size[1], img.size[0]
+            except Exception:
+                self.in_channels = 3
+                self.height = 256
+                self.width = 256
+        else:
+            self.in_channels = None
+            self.height = None
+            self.width = None
+
         self.nn_model = self.initialize_nn_model(self.dataset_name, checkpoint_name, self.file_dir, self.device)
         self.create_dirs(self.file_dir)
 
@@ -26,8 +44,9 @@ class DiffusionModel(nn.Module):
         """Trains model for given inputs"""
         self.nn_model.train()        
         _ , _, ab_t = self.get_ddpm_noise_schedule(timesteps, beta1, beta2, self.device)
-        dataset = self.instantiate_dataset(self.dataset_name, 
-                            self.get_transforms(self.dataset_name), self.file_dir)
+        dataset = self.instantiate_dataset(self.dataset_name,
+                            self.get_transforms(self.dataset_name), self.file_dir,
+                            self.dataset_path)
         dataloader = self.initialize_dataloader(dataset, batch_size, self.checkpoint_name, self.file_dir)
         optim = self.initialize_optimizer(self.nn_model, lr, self.checkpoint_name, self.file_dir, self.device)
         scheduler = self.initialize_scheduler(optim, self.checkpoint_name, self.file_dir, self.device)
@@ -38,7 +57,10 @@ class DiffusionModel(nn.Module):
 
             for x, c in tqdm(dataloader, mininterval=2, desc=f"Epoch {epoch}"):
                 x = x.to(self.device)
-                c = self.get_masked_context(c).to(self.device)
+                if self.dataset_name == "paired":
+                    c = c.mean(dim=[2,3]).to(self.device)
+                else:
+                    c = self.get_masked_context(c).to(self.device)
                 
                 # perturb data
                 noise = torch.randn_like(x)
@@ -106,9 +128,9 @@ class DiffusionModel(nn.Module):
         """
         return ab_t.sqrt()[t, None, None, None] * x + (1 - ab_t[t, None, None, None]).sqrt() * noise
     
-    def instantiate_dataset(self, dataset_name, transforms, file_dir, train=True):
+    def instantiate_dataset(self, dataset_name, transforms, file_dir, dataset_path=None, train=True):
         """Returns instantiated dataset for given dataset name"""
-        assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10"}, "Unknown dataset"
+        assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10", "paired"}, "Unknown dataset"
         
         transform, target_transform = transforms
         if dataset_name=="mnist":
@@ -119,10 +141,12 @@ class DiffusionModel(nn.Module):
             return SpriteDataset(os.path.join(file_dir, "datasets"), transform, target_transform)
         if dataset_name=="cifar10":
             return CIFAR10(os.path.join(file_dir, "datasets"), train, transform, target_transform, True)
+        if dataset_name=="paired":
+            return PairedImageDataset(dataset_path, transform)
 
     def get_transforms(self, dataset_name):
         """Returns transform and target-transform for given dataset name"""
-        assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10"}, "Unknown dataset"
+        assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10", "paired"}, "Unknown dataset"
 
         if dataset_name in {"mnist", "fashion_mnist", "cifar10"}:
             transform = transforms.Compose([
@@ -133,13 +157,18 @@ class DiffusionModel(nn.Module):
                 lambda x: torch.tensor([x]),
                 lambda class_labels, n_classes=10: nn.functional.one_hot(class_labels, n_classes).squeeze()
             ])
-
         if dataset_name=="sprite":
             transform = transforms.Compose([
                 transforms.ToTensor(),  # from [0,255] to range [0.0,1.0]
                 lambda x: 2*x - 1       # range [-1,1]
             ])
             target_transform = lambda x: torch.from_numpy(x).to(torch.float32)
+        if dataset_name=="paired":
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                lambda x: 2*x - 1
+            ])
+            target_transform = None
         return transform, target_transform
     
     def get_x_unpert(self, x_pert, t, pred_noise, ab_t):
@@ -148,7 +177,7 @@ class DiffusionModel(nn.Module):
     
     def initialize_nn_model(self, dataset_name, checkpoint_name, file_dir, device):
         """Returns the instantiated model based on dataset name"""
-        assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10"}, "Unknown dataset name"
+        assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10", "paired"}, "Unknown dataset name"
 
         if dataset_name in {"mnist", "fashion_mnist"}:
             nn_model = ContextUnet(in_channels=1, height=28, width=28, n_feat=64, n_cfeat=10, n_downs=2)
@@ -156,9 +185,19 @@ class DiffusionModel(nn.Module):
             nn_model = ContextUnet(in_channels=3, height=16, width=16, n_feat=64, n_cfeat=5, n_downs=2)
         elif dataset_name == "cifar10":
             nn_model = ContextUnet(in_channels=3, height=32, width=32, n_feat=64, n_cfeat=10, n_downs=4)
+        elif dataset_name == "paired":
+            h = self.height or 256
+            w = self.width or 256
+            c = self.in_channels or 3
+            nn_model = ContextUnet(in_channels=c, height=h, width=w, n_feat=64, n_cfeat=3, n_downs=4)
 
         if checkpoint_name:
             checkpoint = torch.load(os.path.join(file_dir, "checkpoints", checkpoint_name), map_location=device)
+            if dataset_name == "paired" and not self.in_channels:
+                c = checkpoint.get("in_channels", 3)
+                h = checkpoint.get("height", 256)
+                w = checkpoint.get("width", 256)
+                nn_model = ContextUnet(in_channels=c, height=h, width=w, n_feat=64, n_cfeat=3, n_downs=4)
             nn_model.to(device)
             nn_model.load_state_dict(checkpoint["model_state_dict"])
             return nn_model
@@ -179,12 +218,15 @@ class DiffusionModel(nn.Module):
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "loss": loss,
-            "timesteps": timesteps, 
-            "beta1": beta1, 
+            "timesteps": timesteps,
+            "beta1": beta1,
             "beta2": beta2,
             "device": device,
             "dataset_name": dataset_name,
-            "batch_size": batch_size
+            "batch_size": batch_size,
+            "in_channels": getattr(model, 'in_channels', None),
+            "height": getattr(model, 'height', None),
+            "width": getattr(model, 'width', None)
         }
         torch.save(checkpoint, fpath)
 
@@ -284,8 +326,9 @@ class DiffusionModel(nn.Module):
         folder_path = os.path.join(self.file_dir, f"{self.dataset_name}-test-images")
         os.makedirs(folder_path, exist_ok=True)
 
-        dataset = self.instantiate_dataset(self.dataset_name, 
-                            (transforms.ToTensor(), None), self.file_dir, train=False)
+        dataset = self.instantiate_dataset(self.dataset_name,
+                            (transforms.ToTensor(), None), self.file_dir,
+                            self.dataset_path, train=False)
         dataloader = DataLoader(dataset, 1, True)
         for i, (image, _) in enumerate(dataloader):
             if i == n_samples: break
