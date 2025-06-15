@@ -81,3 +81,11 @@ Results (jpeg and gif files) will be saved into `generated-images` directory, an
   <img src="files-for-readme/sprite_ani.gif" width="45%" />
 </p>
 
+### Paired Stain Dataset
+To train on a paired dataset located at `E:/patches` containing `stained` and `unstained` folders:
+~~~
+python3 train.py --dataset-name paired --dataset-path E:/patches
+~~~
+
+This will learn to generate stained images conditioned on their unstained counterparts.
+
