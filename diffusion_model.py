@@ -13,13 +13,14 @@ from utils import SpriteDataset, PairedImageDataset, generate_animation
 
 
 class DiffusionModel(nn.Module):
-    def __init__(self, device=None, dataset_name=None, checkpoint_name=None, dataset_path=None):
+    def __init__(self, device=None, dataset_name=None, checkpoint_name=None, dataset_path=None, image_size=None):
         super(DiffusionModel, self).__init__()
         self.device = self.initialize_device(device)
         self.file_dir = os.path.dirname(__file__)
         self.dataset_name = self.initialize_dataset_name(self.file_dir, checkpoint_name, dataset_name)
         self.dataset_path = dataset_path
         self.checkpoint_name = checkpoint_name
+        self.image_size = image_size
         if self.dataset_name == "paired" and self.dataset_path:
             sample_dir = os.path.join(self.dataset_path, "stained")
             try:
@@ -35,6 +36,10 @@ class DiffusionModel(nn.Module):
             self.in_channels = None
             self.height = None
             self.width = None
+
+        if self.image_size is not None:
+            self.height = self.image_size
+            self.width = self.image_size
 
         self.nn_model = self.initialize_nn_model(self.dataset_name, checkpoint_name, self.file_dir, self.device)
         self.create_dirs(self.file_dir)
@@ -149,25 +154,40 @@ class DiffusionModel(nn.Module):
         assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10", "paired"}, "Unknown dataset"
 
         if dataset_name in {"mnist", "fashion_mnist", "cifar10"}:
-            transform = transforms.Compose([
+            transform_list = []
+            if self.image_size is not None:
+                transform_list.append(transforms.Resize((self.image_size, self.image_size)))
+            transform_list.extend([
                 transforms.ToTensor(),
                 lambda x: 2*(x - 0.5)
             ])
+            transform = transforms.Compose(transform_list)
             target_transform = transforms.Compose([
                 lambda x: torch.tensor([x]),
                 lambda class_labels, n_classes=10: nn.functional.one_hot(class_labels, n_classes).squeeze()
             ])
         if dataset_name=="sprite":
-            transform = transforms.Compose([
+            transform_list = []
+            if self.image_size is not None:
+                transform_list.extend([
+                    transforms.ToPILImage(),
+                    transforms.Resize((self.image_size, self.image_size))
+                ])
+            transform_list.extend([
                 transforms.ToTensor(),  # from [0,255] to range [0.0,1.0]
                 lambda x: 2*x - 1       # range [-1,1]
             ])
+            transform = transforms.Compose(transform_list)
             target_transform = lambda x: torch.from_numpy(x).to(torch.float32)
         if dataset_name=="paired":
-            transform = transforms.Compose([
+            transform_list = []
+            if self.image_size is not None:
+                transform_list.append(transforms.Resize((self.image_size, self.image_size)))
+            transform_list.extend([
                 transforms.ToTensor(),
                 lambda x: 2*x - 1
             ])
+            transform = transforms.Compose(transform_list)
             target_transform = None
         return transform, target_transform
     
@@ -180,11 +200,17 @@ class DiffusionModel(nn.Module):
         assert dataset_name in {"mnist", "fashion_mnist", "sprite", "cifar10", "paired"}, "Unknown dataset name"
 
         if dataset_name in {"mnist", "fashion_mnist"}:
-            nn_model = ContextUnet(in_channels=1, height=28, width=28, n_feat=64, n_cfeat=10, n_downs=2)
+            h = self.height or 28
+            w = self.width or 28
+            nn_model = ContextUnet(in_channels=1, height=h, width=w, n_feat=64, n_cfeat=10, n_downs=2)
         elif dataset_name=="sprite":
-            nn_model = ContextUnet(in_channels=3, height=16, width=16, n_feat=64, n_cfeat=5, n_downs=2)
+            h = self.height or 16
+            w = self.width or 16
+            nn_model = ContextUnet(in_channels=3, height=h, width=w, n_feat=64, n_cfeat=5, n_downs=2)
         elif dataset_name == "cifar10":
-            nn_model = ContextUnet(in_channels=3, height=32, width=32, n_feat=64, n_cfeat=10, n_downs=4)
+            h = self.height or 32
+            w = self.width or 32
+            nn_model = ContextUnet(in_channels=3, height=h, width=w, n_feat=64, n_cfeat=10, n_downs=4)
         elif dataset_name == "paired":
             h = self.height or 256
             w = self.width or 256
