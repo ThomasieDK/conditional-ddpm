@@ -61,11 +61,16 @@ class DiffusionModel(nn.Module):
             ave_loss = 0
 
             for x, c in tqdm(dataloader, mininterval=2, desc=f"Epoch {epoch}"):
-                x = x.to(self.device)
                 if self.dataset_name == "paired":
-                    c = c.mean(dim=[2,3]).to(self.device)
+                    # dataloader returns (unstained, stained)
+                    unstain = x.to(self.device)
+                    stain = c.to(self.device)
+                    x = stain
+                    c = unstain.mean(dim=[2,3])
                 else:
-                    c = self.get_masked_context(c).to(self.device)
+                    x = x.to(self.device)
+                    c = self.get_masked_context(c)
+                c = c.to(self.device)
                 
                 # perturb data
                 noise = torch.randn_like(x)
@@ -107,9 +112,11 @@ class DiffusionModel(nn.Module):
                                                                              self.device)
         
         self.nn_model.eval()
-        samples = torch.randn(n_samples, self.nn_model.in_channels, 
-                              self.nn_model.height, self.nn_model.width, 
+        samples = torch.randn(n_samples, self.nn_model.in_channels,
+                              self.nn_model.height, self.nn_model.width,
                               device=self.device)
+        if context is not None and context.ndim == 1:
+            context = context.unsqueeze(0).repeat(n_samples, 1)
         intermediate_samples = [samples.detach().cpu()] # samples at T = timesteps
         t_steps = [timesteps] # keep record of time to use in animation generation
         for t in range(timesteps, 0, -1):
