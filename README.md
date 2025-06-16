@@ -82,10 +82,15 @@ Results (jpeg and gif files) will be saved into `generated-images` directory, an
 </p>
 
 ### Paired Stain Dataset
-To train on a paired dataset located at `E:/patches` containing `stained` and `unstained` folders:
+To train on a paired dataset located at `E:/patches` containing `stained` and `unstained` folders (pairs are returned as `(unstained, stained)`):
 ~~~
 python3 train.py --dataset-name paired --dataset-path E:/patches
 ~~~
 
 This will learn to generate stained images conditioned on their unstained counterparts.
+
+To sample a stained image from an unstained slide using a trained model:
+~~~
+python3 sample.py pretrained_paired_checkpoint_XX.pth --context-image path/to/unstained.jpeg --n-samples 1
+~~~
 

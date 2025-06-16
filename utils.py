@@ -59,7 +59,8 @@ class PairedImageDataset(Dataset):
 
         stain = self.transform(stain)
         unstain = self.transform(unstain)
-        return stain, unstain
+        # return pair as (unstained, stained)
+        return unstain, stain
 
 def generate_animation(intermediate_samples, t_steps, fname, n_images_per_row=8):
     """Generates animation and saves as a gif file for given intermediate samples"""
